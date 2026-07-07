@@ -1,0 +1,21 @@
+- Alzheimer's Disease Dataset 
+
+kaggle.com/datasets/rabieelkharoua/alzheimers-disease-dataset
+
+
+
+
+- Sleep in Alzheimer’s disease
+https://www.nature.com/articles/s41398-022-01897-y 
+
+
+
+
+- Elderly fall detection iot-dataset
+
+https://www.kaggle.com/datasets/ziya07/elderly-fall-detection-iot-dataset
+
+
+
+
+
