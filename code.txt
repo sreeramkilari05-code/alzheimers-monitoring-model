@@ -1,0 +1,326 @@
+// ============================================================
+// IEEE EMBS Pune Chapter — ERROR 404 | Team ID: IOT 11
+// TinyML Cognitive Decline Monitoring — Core Firmware v4
+// Mode: CLOUD CONNECTED (Status Feed Only, Mag Hidden from UI)
+// ============================================================
+
+#include <TinyGPS++.h>
+#include <HardwareSerial.h>
+#include <LiquidCrystal.h>
+#include <Wire.h>
+#include <Adafruit_Sensor.h>
+#include <Adafruit_ADXL345_U.h>
+#include <math.h>
+
+// --- NEW: Wi-Fi & Adafruit IO Libraries ---
+#include <WiFi.h>
+#include <Adafruit_MQTT.h>
+#include <Adafruit_MQTT_Client.h>
+
+// ==========================================
+// 1. HARDWARE PIN DEFINITIONS
+// ==========================================
+#define I2C_SDA     21
+#define I2C_SCL     22
+#define RXD2        16
+#define TXD2        17
+#define BUTTON_PIN   4
+#define GPS_BAUD  9600
+
+// LCD Parallel Pins
+const int rs = 13, en = 14, d4 = 25, d5 = 26, d6 = 27, d7 = 33;
+
+// ==========================================
+// 2. WI-FI & ADAFRUIT IO CREDENTIALS
+// ==========================================
+#define WLAN_SSID       "Your Wifi ID"
+#define WLAN_PASS       "Your Wifi Passaword"
+
+#define AIO_SERVER      "io.adafruit.com"
+#define AIO_SERVERPORT  1883
+#define AIO_USERNAME    "Your Adafruit Username"
+#define AIO_KEY         "Your Adafruit Key"
+
+// Create Wi-Fi and Adafruit IO Client
+WiFiClient client;
+Adafruit_MQTT_Client mqtt(&client, AIO_SERVER, AIO_SERVERPORT, AIO_USERNAME, AIO_KEY);
+
+// Setup Feed for Status
+Adafruit_MQTT_Publish statusFeed = Adafruit_MQTT_Publish(&mqtt, AIO_USERNAME "/feeds/status");
+Adafruit_MQTT_Publish sosFeed = Adafruit_MQTT_Publish(&mqtt, AIO_USERNAME "/feeds/sos-alert");
+
+// ==========================================
+// 3. OBJECT INSTANTIATION
+// ==========================================
+Adafruit_ADXL345_Unified accel = Adafruit_ADXL345_Unified(12345);
+TinyGPSPlus gps;
+HardwareSerial SerialGPS(2);
+LiquidCrystal lcd(rs, en, d4, d5, d6, d7);
+
+// ==========================================
+// 4. SYSTEM STATE VARIABLES
+// ==========================================
+// --- RESTORED REALISTIC THRESHOLDS ---
+const float FREE_FALL_THRESHOLD = 4.5;     
+const float IMPACT_THRESHOLD = 18.0;       
+const unsigned long FALL_WINDOW_MS = 500;  
+const float THRESH_MOVING = 1.5;           
+const float THRESH_ACTIVE = 4.0;           
+
+unsigned long freeFallTimestamp   = 0;
+bool          isFreeFalling       = false;
+unsigned long lastAccelTime       = 0;
+
+unsigned long lastPrintTime       = 0;
+unsigned long lastDisplayTime     = 0; 
+unsigned long lastButtonPressTime = 0;
+unsigned long lastActivityTime    = 0; 
+unsigned long lastCloudPublishTime = 0; 
+
+float  currentMagnitude = 9.81; 
+String currentState     = "IDLE  ";
+bool   sosActive        = false;
+bool   lastSosCloudState = false; 
+bool   lastButtonState  = HIGH; 
+
+void MQTT_connect(); 
+
+// ==========================================
+// 5. SETUP
+// ==========================================
+void setup() {
+  Serial.begin(115200);
+  Wire.begin(I2C_SDA, I2C_SCL);
+  SerialGPS.begin(GPS_BAUD, SERIAL_8N1, RXD2, TXD2);
+  pinMode(BUTTON_PIN, INPUT_PULLUP);
+
+  lcd.begin(16, 2);
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("IEEE EMBS Boot..");
+
+  Serial.println("\n---------------------------------------------------");
+  Serial.println("IEEE EMBS: Alzheimer's Core Monitoring Active");
+  Serial.println("Mode: CLOUD CONNECTED (Status Feed Only)");
+  Serial.println("---------------------------------------------------");
+
+  Serial.print("Connecting to Wi-Fi");
+  WiFi.begin(WLAN_SSID, WLAN_PASS);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println("\n[SUCCESS] Wi-Fi Connected!");
+
+  MQTT_connect();
+
+  if (!accel.begin()) {
+    lcd.setCursor(0, 1);
+    lcd.print("ERR: No ADXL345!");
+    Serial.println("CRITICAL ERROR: ADXL345 not found.");
+    while (1);   
+  }
+  accel.setRange(ADXL345_RANGE_16_G);
+
+  delay(1500); 
+  lcd.clear();
+}
+
+// ==========================================
+// 6. MAIN LOOP
+// ==========================================
+void loop() {
+  MQTT_connect();
+
+  while (SerialGPS.available() > 0) {
+    gps.encode(SerialGPS.read());
+  }
+
+  bool currentButtonState = digitalRead(BUTTON_PIN);
+  if (currentButtonState == LOW && lastButtonState == HIGH) {
+    if (millis() - lastButtonPressTime > 500) {
+      lastButtonPressTime = millis();
+      sosActive = !sosActive;
+      if (!sosActive) currentState = "IDLE  ";
+      
+      lcd.clear(); 
+    }
+  }
+  lastButtonState = currentButtonState; 
+
+  if (millis() - lastAccelTime >= 10) {
+    lastAccelTime = millis();
+
+    sensors_event_t event;
+    accel.getEvent(&event);
+
+    currentMagnitude = sqrt(event.acceleration.x*event.acceleration.x + 
+                            event.acceleration.y*event.acceleration.y + 
+                            event.acceleration.z*event.acceleration.z);
+
+    if (currentMagnitude < FREE_FALL_THRESHOLD && !isFreeFalling) {
+      isFreeFalling      = true;
+      freeFallTimestamp  = millis();
+    }
+
+    if (isFreeFalling) {
+      unsigned long elapsed = millis() - freeFallTimestamp;
+      if (currentMagnitude > IMPACT_THRESHOLD && elapsed <= FALL_WINDOW_MS) {
+        if (!sosActive) lcd.clear(); 
+        currentState = "FALL!!";
+        sosActive    = true;
+        isFreeFalling = false;
+      } else if (elapsed > FALL_WINDOW_MS) {
+        isFreeFalling = false;
+      }
+    }
+
+    if (!sosActive && currentState != "FALL!!") {
+      float deviation = abs(currentMagnitude - 9.81);
+      
+      if (deviation > THRESH_ACTIVE) {
+        currentState = "ACTIVE";
+        lastActivityTime = millis(); 
+      } 
+      else if (deviation > THRESH_MOVING) {
+        if (currentState != "ACTIVE" || millis() - lastActivityTime > 2000) {
+          currentState = "MOVING";
+          lastActivityTime = millis(); 
+        }
+      } 
+      else {
+        if (millis() - lastActivityTime > 2000) {
+          currentState = "IDLE  ";
+        }
+      }
+    }
+  }
+
+  if (millis() - lastPrintTime >= 1000) {
+    lastPrintTime = millis();
+
+    Serial.print("[");
+    Serial.print(sosActive ? "EMERGENCY" : currentState);
+    Serial.print("]\t GPS: "); 
+
+    if (gps.location.isValid()) {
+      Serial.print(gps.location.lat(), 6);
+      Serial.print(", ");
+      Serial.print(gps.location.lng(), 6);
+      Serial.print("  Sats:");
+      Serial.println(gps.satellites.value());
+    } else {
+      Serial.println("SEARCHING SATELLITES...");
+    }
+  }
+
+  if (millis() - lastDisplayTime >= 500) {
+    lastDisplayTime = millis();
+    updateDisplay();
+  }
+
+  // ── F. ADAFRUIT IO CLOUD PUBLISHING ──
+  
+  if (sosActive != lastSosCloudState) {
+    lastSosCloudState = sosActive;
+
+    Serial.print("--> Sending SOS State to Adafruit IO... ");
+    
+    if (sosFeed.publish(sosActive ? "1" : "0")) {
+      Serial.println("SUCCESS!");
+    } else {
+      Serial.println("FAILED.");
+    }
+    
+    // Instantly update the Text Block too
+    String stateToPublish = sosActive ? "EMERGENCY" : "IDLE  ";
+    stateToPublish.trim();
+    Serial.print("--> Sending Status to Adafruit IO: [");
+    Serial.print(stateToPublish);
+    Serial.print("] ... ");
+    if (statusFeed.publish(stateToPublish.c_str())) {
+      Serial.println("SUCCESS!");
+    } else {
+      Serial.println("FAILED.");
+    }
+
+    lastCloudPublishTime = millis(); 
+    
+    // Safely update the LCD without resetting its entire brain
+    lcd.clear(); 
+    updateDisplay();
+  }
+
+  if (millis() - lastCloudPublishTime >= 10000) {
+    lastCloudPublishTime = millis();
+    
+    String stateToPublish = sosActive ? "EMERGENCY" : currentState;
+    stateToPublish.trim(); 
+
+    Serial.print("--> Sending Status to Adafruit IO: [");
+    Serial.print(stateToPublish);
+    Serial.print("] ... ");
+    
+    if (statusFeed.publish(stateToPublish.c_str())) {
+      Serial.println("SUCCESS!");
+    } else {
+      Serial.println("FAILED.");
+    }
+  }
+}
+
+// ==========================================
+// 7. DISPLAY LOGIC
+// ==========================================
+void updateDisplay() {
+  if (sosActive) {
+    lcd.setCursor(0, 0);
+    lcd.print("! EMERGENCY SOS!");
+    
+    lcd.setCursor(0, 1);
+    if (gps.location.isValid()) {
+      lcd.print(gps.location.lat(), 3);
+      lcd.print(",");
+      lcd.print(gps.location.lng(), 3); 
+      lcd.print("    "); 
+    } else {
+      lcd.print("Locating GPS... ");
+    }
+  } else {
+    lcd.setCursor(0, 0);
+    lcd.print("St:");
+    lcd.print(currentState);
+    for(int i = currentState.length(); i < 13; i++) lcd.print(" "); 
+
+    lcd.setCursor(0, 1);
+    lcd.print("Satellites: "); 
+    if (gps.satellites.isValid()) {
+      lcd.print(gps.satellites.value());
+      lcd.print("   "); 
+    } else {
+      lcd.print("0   ");
+    }
+  }
+}
+
+// ==========================================
+// 8. ADAFRUIT IO CONNECTION MANAGER
+// ==========================================
+void MQTT_connect() {
+  int8_t ret;
+  
+  if (mqtt.connected()) return; 
+  if (WiFi.status() != WL_CONNECTED) return; 
+
+  Serial.print("Connecting to Adafruit IO MQTT... ");
+  uint8_t retries = 3; 
+  while ((ret = mqtt.connect()) != 0) { 
+       Serial.println(mqtt.connectErrorString(ret));
+       Serial.println("Retrying MQTT connection in 2 seconds...");
+       mqtt.disconnect();
+       delay(2000);  
+       retries--;
+       if (retries == 0) return; 
+  }
+  Serial.println("[SUCCESS] MQTT Connected!");
+}

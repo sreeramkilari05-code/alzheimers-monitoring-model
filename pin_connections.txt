@@ -1,0 +1,45 @@
+ESP32 ↔ ADXL345 (I2C)
+
+ADXL345 Pin	       ESP32 Pin
+VCC	  ------------   3.3V
+GND	  ------------   GND
+SDA	  ------------   GPIO 21
+SCL	  ------------   GPIO 22
+CS	  ------------   3.3V 
+SDO	  ------------   GND 
+
+
+
+ESP32 ↔           GPS Module
+
+GPS Pin	           ESP32 Pin
+VCC	 ------------  3.3V or 5V 
+TX   ------------  GPIO 16 (RX2)
+RX	 ------------  GPIO 17 (TX2)
+GND  ------------  GND
+
+
+
+ESP32 ↔        16×2 LCD (Parallel Mode)
+
+LCD Pin	       ESP32 Pin
+VSS  ------------ GND
+VDD	 ------------ 5V
+VO	 ------------ Middle pin of 10kΩ potentiometer (other ends to 5V & GND)
+RS	 ------------ GPIO 13
+RW	 ------------ GND
+E	 ------------ GPIO 14
+D4	 ------------ GPIO 25
+D5	 ------------ GPIO 26
+D6	 ------------ GPIO 27
+D7	 ------------ GPIO 33
+A (LED+) -------- 5V through 220Ω resistor (or directly if module has resistor)
+K (LED−) -------- GND
+
+
+
+ESP32 ↔           Push Button
+
+Button Pin     -----  ESP32 Pin
+One Terminal   -----  GPIO 4
+Other Terminal -----  GND
